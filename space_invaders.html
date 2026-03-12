@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Space Invaders Demo</title>
+    <style>
+        body {
+            background: #111;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #gameCanvas {
+            border: 2px solid #fff;
+            background: #000;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="info">Space Invaders Demo – your agent controls the ship; destroy all aliens!</div>
+    <canvas id="gameCanvas" width="640" height="480"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+
+        // Player ship
+        const ship = {
+            x: width / 2,
+            y: height - 30,
+            width: 40,
+            height: 10,
+            speed: 5
+        };
+        // Bullet
+        let bullet = null; // {x, y, speed}
+        // Aliens grid
+        const alienRows = 4;
+        const alienCols = 8;
+        const alienWidth = 30;
+        const alienHeight = 20;
+        const alienPadding = 15;
+        const alienOffsetTop = 40;
+        const alienOffsetLeft = 40;
+        let aliens = [];
+        for (let r = 0; r < alienRows; r++) {
+            aliens[r] = [];
+            for (let c = 0; c < alienCols; c++) {
+                aliens[r][c] = { x: 0, y: 0, alive: true };
+            }
+        }
+        let alienDirection = 1; // 1 = right, -1 = left
+        let alienSpeed = 1;
+
+        let score = 0;
+        let lives = 5;
+        let level = 1;
+        let gameOver = false;
+
+        // WebSocket integration
+        let gameWs;
+        try {
+            gameWs = new WebSocket('ws://localhost:6789/game_invaders');
+            gameWs.onopen = () => console.log('Connected to Invaders WS server');
+            gameWs.onerror = (err) => console.error('Invaders WS error', err);
+            gameWs.onclose = () => console.log('Invaders WS connection closed');
+            gameWs.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'action') {
+                        if (msg.move === 'left') moveAgentShip('left');
+                        else if (msg.move === 'right') moveAgentShip('right');
+                        else if (msg.move === 'stop') moveAgentShip('stop');
+                        if (msg.shoot) shoot();
+                    } else if (msg.type === 'ai' && msg.start) {
+                        startAgentAI();
+                    } else if (msg.type === 'control') {
+                        if (msg.command === 'pause') gamePaused = true;
+                        if (msg.command === 'resume') gamePaused = false;
+                    }
+                } catch (e) {
+                    console.error('Error parsing Invaders message', e);
+                }
+            };
+        } catch (e) {
+            console.error('Failed to create Space Invaders WebSocket', e);
+        }
+        function sendGameState() {
+            if (!gameWs || gameWs.readyState !== WebSocket.OPEN) return;
+            // Count remaining aliens
+            let remaining = 0;
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    if (aliens[r][c].alive) remaining++;
+                }
+            }
+            const aliveAliens = [];
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    const a = aliens[r][c];
+                    if (a.alive) {
+                        aliveAliens.push({ x: a.x + alienWidth / 2, y: a.y + alienHeight / 2 });
+                    }
+                }
+            }
+            const state = {
+                type: 'state',
+                shipX: ship.x,
+                shipWidth: ship.width,
+                bullet: bullet ? { x: bullet.x, y: bullet.y } : null,
+                aliens: aliveAliens,
+                remainingAliens: remaining,
+                score: score,
+                lives: lives,
+                level: level,
+                gameOver: gameOver
+            };
+            try {
+                gameWs.send(JSON.stringify(state));
+            } catch (e) {
+                console.error('Failed to send Invaders state', e);
+            }
+        }
+
+        // Agent control
+        let agentAuto = false;
+        function moveAgentShip(direction) {
+            if (direction === 'left') ship.x -= ship.speed;
+            else if (direction === 'right') ship.x += ship.speed;
+            else if (direction === 'stop') {
+                // no op
+            }
+            // Boundaries
+            if (ship.x < 0) ship.x = 0;
+            if (ship.x + ship.width > width) ship.x = width - ship.width;
+        }
+        function shoot() {
+            if (bullet === null) {
+                bullet = { x: ship.x + ship.width / 2, y: ship.y, speed: 6 };
+            }
+        }
+        function startAgentAI() {
+            agentAuto = true;
+        }
+        function updateAgent() {
+            if (agentAuto) {
+                // Find closest alive alien horizontally
+                let targetX = null;
+                outer: for (let r = alienRows - 1; r >= 0; r--) {
+                    for (let c = 0; c < alienCols; c++) {
+                        if (aliens[r][c].alive) {
+                            targetX = aliens[r][c].x + alienWidth / 2;
+                            break outer;
+                        }
+                    }
+                }
+                if (targetX !== null) {
+                    const shipCenter = ship.x + ship.width / 2;
+                    if (shipCenter < targetX - 6) ship.x += ship.speed;
+                    else if (shipCenter > targetX + 6) ship.x -= ship.speed;
+                    else {
+                        // aligned; shoot
+                        shoot();
+                    }
+                    // Boundaries
+                    if (ship.x < 0) ship.x = 0;
+                    if (ship.x + ship.width > width) ship.x = width - ship.width;
+                }
+            }
+        }
+
+        // Draw aliens
+        function drawAliens() {
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    const a = aliens[r][c];
+                    if (a.alive) {
+                        ctx.fillStyle = '#0f0';
+                        ctx.fillRect(a.x, a.y, alienWidth, alienHeight);
+                    }
+                }
+            }
+        }
+        function resetAliens() {
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    aliens[r][c].alive = true;
+                }
+            }
+            alienDirection = 1;
+            // Speed increases with level
+            alienSpeed = 0.8 + (level - 1) * 0.4;
+            updateAlienPositions(true);
+        }
+        function updateAlienPositions(reset) {
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    const a = aliens[r][c];
+                    a.x = c * (alienWidth + alienPadding) + alienOffsetLeft;
+                    a.y = r * (alienHeight + alienPadding) + alienOffsetTop;
+                }
+            }
+            if (!reset) {
+                // apply movement along horizontal direction
+                for (let r = 0; r < alienRows; r++) {
+                    for (let c = 0; c < alienCols; c++) {
+                        const a = aliens[r][c];
+                        a.x += alienDirection * alienSpeed;
+                    }
+                }
+            }
+        }
+        // Move aliens and handle wall collisions
+        function updateAliens() {
+            // Determine if any alien has reached edge
+            let hitEdge = false;
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    const a = aliens[r][c];
+                    if (a.alive) {
+                        if (alienDirection === 1 && a.x + alienWidth > width - 10) hitEdge = true;
+                        if (alienDirection === -1 && a.x < 10) hitEdge = true;
+                    }
+                }
+            }
+            if (hitEdge) {
+                alienDirection *= -1;
+                // Move down when hitting edge
+                for (let r = 0; r < alienRows; r++) {
+                    for (let c = 0; c < alienCols; c++) {
+                        aliens[r][c].y += alienHeight;
+                    }
+                }
+            }
+            // Move horizontally
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    aliens[r][c].x += alienDirection * alienSpeed;
+                }
+            }
+
+            // Check if any alien reaches the bottom / hits player
+            let reachedBottom = false;
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    const a = aliens[r][c];
+                    if (a.alive && a.y + alienHeight >= ship.y) {
+                        reachedBottom = true;
+                    }
+                }
+            }
+            if (reachedBottom) {
+                lives--;
+                if (lives <= 0) {
+                    gameOver = true;
+                } else {
+                    resetAliens();
+                    bullet = null;
+                }
+            }
+        }
+        // Collision detection for bullet and aliens
+        function bulletAlienCollision() {
+            if (bullet) {
+                for (let r = 0; r < alienRows; r++) {
+                    for (let c = 0; c < alienCols; c++) {
+                        const a = aliens[r][c];
+                        if (a.alive) {
+                            if (
+                                bullet.x > a.x &&
+                                bullet.x < a.x + alienWidth &&
+                                bullet.y > a.y &&
+                                bullet.y < a.y + alienHeight
+                            ) {
+                                a.alive = false;
+                                bullet = null;
+                                score += 10;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        function draw() {
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, width, height);
+            // Draw ship
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(ship.x, ship.y, ship.width, ship.height);
+            // Draw bullet
+            if (bullet) {
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(bullet.x - 2, bullet.y - 10, 4, 10);
+            }
+            // Draw aliens
+            drawAliens();
+            // Score, Level, Lives
+            ctx.font = '16px Arial';
+            ctx.fillStyle = '#fff';
+            ctx.fillText('Score: ' + score, 10, 20);
+            ctx.fillText('Level: ' + level, 120, 20);
+            ctx.fillText('Lives: ' + lives, 220, 20);
+
+            if (gameOver) {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, width, height);
+                ctx.fillStyle = '#fff';
+                ctx.font = '40px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', width / 2, height / 2);
+                ctx.textAlign = 'left'; // Reset
+                return;
+            }
+
+            if (gamePaused) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, width, height);
+                ctx.fillStyle = '#fff';
+                ctx.font = '40px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('PAUSED', width / 2, height / 2);
+                ctx.textAlign = 'left'; // Reset
+            }
+        }
+        let gamePaused = false;
+        function update() {
+            if (gamePaused) return; // Prevent loop execution when paused
+
+            // Move aliens
+            updateAliens();
+            // Move bullet
+            if (bullet) {
+                bullet.y -= bullet.speed;
+                if (bullet.y < 0) bullet = null;
+            }
+            bulletAlienCollision();
+            // Check if all aliens destroyed
+            let remaining = 0;
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    if (aliens[r][c].alive) remaining++;
+                }
+            }
+            if (remaining === 0) {
+                // Next Level
+                level++;
+                resetAliens();
+                bullet = null;
+            }
+            // Update agent AI
+            updateAgent();
+            // Send state
+            sendGameState();
+        }
+        // Recording setup
+        let recording = true;
+        const replayData = [];
+        const startTime = Date.now();
+        function recordState() {
+            if (!recording) return;
+            // Count remaining aliens
+            let remaining = 0;
+            for (let r = 0; r < alienRows; r++) {
+                for (let c = 0; c < alienCols; c++) {
+                    if (aliens[r][c].alive) remaining++;
+                }
+            }
+            replayData.push({
+                t: Date.now() - startTime,
+                shipX: ship.x,
+                bullet: bullet ? { x: bullet.x, y: bullet.y } : null,
+                remainingAliens: remaining,
+                score: score
+            });
+        }
+        function stopRecording() {
+            recording = false;
+            const duration = (Date.now() - startTime) / 1000;
+            console.log('Space Invaders session metrics:', { duration: duration, score: score });
+            const blob = new Blob([JSON.stringify(replayData)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'space_invaders_replay.json';
+            a.click();
+        }
+
+        // Initialize aliens positions
+        updateAlienPositions(true);
+        function gameLoop() {
+            update();
+            draw();
+            recordState();
+            requestAnimationFrame(gameLoop);
+        }
+        draw();
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+
+</html>
