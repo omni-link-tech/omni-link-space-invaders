@@ -38,7 +38,6 @@ class InvadersRelayServer:
         self.port = port
         self.clients: Dict[str, websockets.WebSocketServerProtocol] = {}
         self.last_state = None
-        self.win_published = False
         self.mqtt_client = mqtt.Client(callback_api_version=CallbackAPIVersion.VERSION2, transport="websockets")
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
@@ -70,18 +69,10 @@ class InvadersRelayServer:
 
     async def publish_state_loop(self):
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(20)
             if self.last_state:
                 try:
-                    data = json.loads(self.last_state)
-                    filtered_state = {
-                        "remainingAliens": data.get("remainingAliens", 0),
-                        "score": data.get("score", 0),
-                        "lives": data.get("lives", 0),
-                        "level": data.get("level", 1),
-                        "gameOver": data.get("gameOver", False)
-                    }
-                    self.mqtt_client.publish("olink/context", json.dumps(filtered_state))
+                    self.mqtt_client.publish("olink/context", self.last_state)
                 except Exception as e:
                     pass
 
@@ -109,22 +100,6 @@ class InvadersRelayServer:
             async for message in websocket:
                 if role == "game":
                     self.last_state = message
-                    
-                    # Intercept win condition from backend
-                    try:
-                        state_data = json.loads(message)
-                        if state_data.get("type") == "state" and state_data.get("level", 1) >= 5 and not self.win_published:
-                            self.win_published = True
-                            win_payload = json.dumps({
-                                "source": "Space Invaders Game",
-                                "message": "I win! Successfully reached Level 5.",
-                                "score": state_data.get("score", 0)
-                            })
-                            print(f"[BACKEND] Win Condition Met! Publishing to MQTT: {win_payload}")
-                            self.mqtt_client.publish("olink/context", win_payload)
-                    except Exception as e:
-                        print("Error checking win condition:", e)
-                        
                     if "agent" in self.clients:
                         await self.clients["agent"].send(message)
                 elif role == "agent" and "game" in self.clients:
